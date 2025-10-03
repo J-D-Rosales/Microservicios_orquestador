@@ -2,8 +2,10 @@ from fastapi import FastAPI, HTTPException
 import httpx, os, asyncio, time
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
-
+from fastapi.middleware.cors import CORSMiddleware
+import os
 from app.schemas import CreateOrderReq
+
 
 # ---------- Config ----------
 MS1 = os.getenv("MS1_URL", "http://localhost:8001")  # usuarios
@@ -14,6 +16,15 @@ REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5.0"))
 TAX_RATE = float(os.getenv("TAX_RATE", "0.18"))
 
 app = FastAPI(title="Orquestador Delivery (solo price-quote)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=".*",   # acepta cualquier origen
+    allow_credentials=True,    # permite cookies/Authorization si las usas
+    allow_methods=["*"],       # incluye GET/POST/PUT/DELETE/OPTIONS
+    allow_headers=["*"],       # incluye Idempotency-Key automáticamente
+    expose_headers=["Location"]
+)
 
 client: httpx.AsyncClient | None = None
 
