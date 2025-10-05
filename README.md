@@ -1,15 +1,300 @@
-# ms4-orquestadorDelivery (FastAPI, no DB)
+Orquestador Delivery (FastAPI)
 
-### Prerrequisitos
-- ms1-usuarios en http://localhost:8001
-- ms2-productos en http://localhost:8002
-- ms3-pedidos   en http://localhost:8003
+Orquesta microservicios de Usuarios (MS1), Productos (MS2) y Pedidos (MS3) para:
 
-> Si usas contenedores en la misma red, puedes definir:
-> MS1_URL=http://ms1-usuarios:8001  MS2_URL=http://ms2-productos:8002  MS3_URL=http://ms3-pedidos:8003
+Cotización de carrito (valida usuario/dirección y recalcula precios contra MS2).
 
-## Ejecutar local (sin Docker)
-```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8004
+Detalle enriquecido de pedido (trae pedido de MS3 y lo enriquece con info actual de MS2 y resumen de MS1).
+
+Incluye:
+
+CORS configurable vía variable de entorno.
+
+Health check simple y profundo.
+
+Arquitectura y dependencias
+
+Python: 3.11+
+
+Framework: FastAPI + Uvicorn
+
+HTTP client: httpx
+
+Microservicios consumidos:
+
+MS1 (Usuarios): GET /usuarios/{id}, GET /direcciones/{id_usuario}
+
+MS2 (Productos): GET /productos/{id}, GET /categorias, GET /productos
+
+MS3 (Pedidos): GET /pedidos/{order_id}, GET /pedidos
+
+Endpoints
+1) Cotización de carrito
+
+POST /orq/cart/price-quote
+
+Orquesta MS1 + MS2:
+
+Valida que el usuario exista (MS1).
+
+(Opcional) Valida que la dirección pertenezca al usuario (MS1).
+
+Consulta cada producto al MS2 para obtener precio vigente (no confía en el cliente).
+
+Calcula subtotal, taxes y total (usa TAX_RATE).
+
+Body (ejemplo)
+
+{
+  "id_usuario": 1,
+  "id_direccion": 1,
+  "items": [
+    {"id_producto": 1, "cantidad": 2}
+  ]
+}
+
+
+Respuesta (ejemplo)
+
+{
+  "generatedAt": "2025-09-30T23:03:07Z",
+  "items": [
+    {
+      "id_producto": 1,
+      "nombre": "producto_1",
+      "precio_unitario": 473.58,
+      "cantidad": 2,
+      "line_total": 947.16,
+      "categoria_id": null,
+      "categoria_nombre": null,
+      "price_changed": false
+    }
+  ],
+  "issues": [],
+  "totals": {
+    "subtotal": 947.16,
+    "taxes": 170.49,
+    "total": 1117.65
+  }
+}
+
+2) Detalle enriquecido de pedido
+
+GET /orq/orders/{order_id}/details?id_usuario=...
+
+Orquesta MS3 + MS2 + MS1:
+
+Trae el pedido (MS3) y verifica que pertenezca a id_usuario.
+
+En cada línea, trae el producto actual (MS2) y marca si cambió el precio desde que se creó el pedido.
+
+Mapea categoría (MS2) y agrega un resumen del usuario (MS1) incluyendo cantidad de direcciones.
+
+Ejemplo
+
+GET /orq/orders/68dc67973081efedbf717c7d/details?id_usuario=1
+
+
+Respuesta (recortada)
+
+{
+  "orderId": "68dc67973081efedbf717c7d",
+  "estado": "pendiente",
+  "fecha_pedido": "2025-09-30T23:28:23.441Z",
+  "user": {
+    "id_usuario": 1,
+    "nombre": "Juan",
+    "correo": "juan@acme.com",
+    "telefono": "999999999",
+    "direcciones_count": 1
+  },
+  "lines": [
+    {
+      "id_producto": 1,
+      "nombre": "producto_1",
+      "cantidad": 1,
+      "precio_unitario_ms3": 100,
+      "line_total_ms3": 100,
+      "current_price_ms2": 120,
+      "price_changed_since_order": true,
+      "categoria_id": 5,
+      "categoria_nombre": "Electrónica"
+    }
+  ],
+  "issues": [
+    {"id_producto": 1, "reason": "PRICE_CHANGED_SINCE_ORDER"}
+  ],
+  "totals": {
+    "total_ms3": 100,
+    "recomputed_subtotal_ms3": 100,
+    "taxes_estimated": 18,
+    "total_estimated": 118
+  }
+}
+
+3) Health check
+
+GET /health
+GET /health?deep=1 → consulta MS1/MS2/MS3 (best-effort)
+
+Ejemplo
+
+{
+  "service": "orquestador",
+  "time": "2025-09-30T23:59:59Z",
+  "cors": "*",
+  "status": "ready",
+  "dependencies": {
+    "ms1_usuarios": {"url": "http://ms1-usuarios:8000/usuarios/1", "status": 200},
+    "ms2_productos": {"url": "http://ms2-productos:8080/productos", "status": 200},
+    "ms3_pedidos": {"url": "http://ms3-pedidos:3003/pedidos", "status": 200}
+  }
+}
+
+4) (Opcional) Debug direcciones
+
+GET /orq/_debug/addresses/{id_usuario}
+Devuelve crudo lo que responde MS1 y cómo se normaliza.
+
+Qué debes eliminar para quedarte solo con los 2 endpoints
+
+En tu main.py, borra (si aún existen):
+
+@app.post("/orq/orders") (crear pedido)
+
+@app.put("/orq/orders/{order_id}/cancel") (cancelar pedido)
+
+Helpers que solo usaban esos endpoints:
+
+extract_order_id, extract_order_id_from_location
+
+write_history
+
+Cache de idempotencia (_IDEMP_CACHE, idem_get, idem_set)
+
+Imports asociados a lo anterior si ya no se usan:
+
+from fastapi import Header (si no queda ningún uso)
+
+from app.schemas import CreateOrderReq (si tienes la clase CreateOrderReq definida local y no usas un archivo externo)
+
+Mantén:
+
+ensure_user_and_address, pick, to_float, normalize_list, extract_category_id, extract_category_name
+
+Config/CORS/health
+
+POST /orq/cart/price-quote
+
+GET /orq/orders/{order_id}/details
+
+Si quieres un orquestador solo-lectura, puedes incluso borrar la clase CreateOrderReq.
+Si más adelante reactivas creación/cancelación, la vuelves a usar.
+
+Variables de entorno
+Variable	Descripción	Default
+MS1_URL	Base URL de usuarios	http://localhost:8001
+MS2_URL	Base URL de productos	http://localhost:8002
+MS3_URL	Base URL de pedidos	http://localhost:8003
+REQUEST_TIMEOUT	Timeout (s) para httpx	5.0
+TAX_RATE	Impuesto aplicado en cotización	0.18
+CORS_ALLOWED_ORIGINS	*, lista separada por comas o regex:^patrón$	*
+
+Ejemplos de CORS_ALLOWED_ORIGINS
+
+*
+
+http://localhost:3000,http://localhost:5173
+
+regex:^https://.*\.tu-dominio\.com$
+
+Correr local
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8004
+
+
+Swagger: http://localhost:8004/docs
+Redoc: http://localhost:8004/redoc
+
+Docker
+
+Dockerfile (ya lo tienes):
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+EXPOSE 8004
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]
+
+
+Build & run (si MS1/2/3 corren en tu host):
+
+docker build -t jdrosales6/ms4-orquestador:1.0.2 -t jdrosales6/ms4-orquestador:latest .
+docker run --rm -p 8004:8004 \
+  --add-host=host.docker.internal:host-gateway \
+  -e MS1_URL=http://host.docker.internal:8001 \
+  -e MS2_URL=http://host.docker.internal:8002 \
+  -e MS3_URL=http://host.docker.internal:8003 \
+  -e CORS_ALLOWED_ORIGINS="*" \
+  jdrosales6/ms4-orquestador:1.0.2
+
+
+docker-compose junto a tus MS (misma red):
+
+services:
+  ms4-orquestador:
+    image: jdrosales6/ms4-orquestador:1.0.2
+    container_name: ms4-orquestador
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      MS1_URL: "http://ms1-usuarios:8000"
+      MS2_URL: "http://ms2-productos:8080"
+      MS3_URL: "http://ms3-pedidos:3003"
+      REQUEST_TIMEOUT: "5.0"
+      TAX_RATE: "0.18"
+      CORS_ALLOWED_ORIGINS: ${GLOBAL_CORS}
+    networks:
+      - backend
+    depends_on:
+      - ms1-usuarios
+      - ms2-productos
+      - ms3-pedidos
+
+
+.env:
+
+GLOBAL_CORS=*
+
+Tests rápidos
+
+Cotización
+
+curl -s -X POST http://localhost:8004/orq/cart/price-quote \
+  -H 'Content-Type: application/json' \
+  -d '{"id_usuario":1,"id_direccion":1,"items":[{"id_producto":1,"cantidad":1}]}' | jq
+
+
+Detalle de pedido
+
+curl -s "http://localhost:8004/orq/orders/<ORDER_ID>/details?id_usuario=1" | jq
+
+
+Health
+
+curl -s http://localhost:8004/health | jq
+curl -s "http://localhost:8004/health?deep=1" | jq
+
+Troubleshooting
+
+400 “Dirección inválida…”
+Verifica direcciones con GET /orq/_debug/addresses/{id_usuario} y usa un id_direccion que pertenezca al usuario.
+
+ECONNREFUSED a MS1/MS2/MS3 en Docker
+En compose usa http://<service_name>:<puerto interno> (no localhost).
+En docker run contra servicios en el host, usa http://host.docker.internal:<puerto> + --add-host=host.docker.internal:host-gateway (Linux).
+
+CORS bloqueado
+Ajusta CORS_ALLOWED_ORIGINS / GLOBAL_CORS.
