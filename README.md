@@ -1,6 +1,3 @@
-Aquí tienes un **README** actualizado para tu orquestador, basado en el código que pegaste y la decisión de quedarte con **dos endpoints útiles y no redundantes**.
-
----
 
 # Orquestador Delivery (FastAPI)
 
