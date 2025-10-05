@@ -189,6 +189,49 @@ class CreateOrderReq(BaseModel):
     id_usuario: int
     id_direccion: int
     items: List[CartItem]
+
+# endopint del healt
+from fastapi import Query
+
+@app.get("/healthz")
+async def healthz(deep: int = Query(default=0, ge=0, le=1)):
+    """
+    Liveness / Readiness:
+    - GET /healthz         -> rápido (no consulta dependencias)
+    - GET /healthz?deep=1  -> verifica MS1/MS2/MS3 (best-effort)
+    """
+    status = {
+        "service": "orquestador",
+        "time": now_iso(),
+        "cors": _CORS_ENV,
+        "status": "ok"
+    }
+
+    if not deep:
+        return status
+
+    async def check(url: str):
+        try:
+            r = await client.get(url)
+            return {"url": url, "status": r.status_code}
+        except Exception as e:
+            return {"url": url, "error": str(e)}
+
+    # Endpoints ligeros y reales de tus MS
+    checks = await asyncio.gather(
+        check(f"{MS1}/usuarios/1"),   # cambia el ID si lo necesitas
+        check(f"{MS2}/productos"),
+        check(f"{MS3}/pedidos")
+    )
+
+    status["dependencies"] = {
+        "ms1_usuarios": checks[0],
+        "ms2_productos": checks[1],
+        "ms3_pedidos":   checks[2]
+    }
+    all_ok = all(c.get("status") == 200 for c in checks)
+    status["status"] = "ready" if all_ok else "degraded"
+    return status
 # ---------- Endpoint ÚNICO: /orq/cart/price-quote ----------
 @app.post("/orq/cart/price-quote")
 async def price_quote(payload: PriceQuoteReq):
