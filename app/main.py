@@ -14,19 +14,38 @@ MS3 = os.getenv("MS3_URL", "http://localhost:8003")  # pedidos
 
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5.0"))
 TAX_RATE = float(os.getenv("TAX_RATE", "0.18"))
+_CORS_ENV = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
 
-app = FastAPI(title="Orquestador Delivery (solo price-quote)")
+def _parse_cors(env_val: str):
+    if not env_val or env_val == "*":
+        return {"allow_origins": ["*"]}
+    if env_val.lower().startswith("regex:"):
+        # quitar el prefijo y usar allow_origin_regex
+        return {"allow_origin_regex": env_val[len("regex:"):]}
+    # lista separada por comas
+    origins = [o.strip() for o in env_val.split(",") if o.strip()]
+    return {"allow_origins": origins or ["*"]}
 
+app = FastAPI(
+    title="Orquestador Delivery",
+    version="1.0.0",
+    description="API Orquestador: cotización, creación y cancelación de pedidos (MS1/MS2/MS3).",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+_cors_kwargs = _parse_cors(_CORS_ENV)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=".*",   # acepta cualquier origen
-    allow_credentials=True,    # permite cookies/Authorization si las usas
-    allow_methods=["*"],       # incluye GET/POST/PUT/DELETE/OPTIONS
-    allow_headers=["*"],       # incluye Idempotency-Key automáticamente
+    **_cors_kwargs,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
     expose_headers=["Location"]
 )
 
-client: httpx.AsyncClient | None = None
+client: Optional[httpx.AsyncClient] = None
 
 @app.on_event("startup")
 async def _startup():
