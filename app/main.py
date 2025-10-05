@@ -193,7 +193,7 @@ class CreateOrderReq(BaseModel):
 # endopint del healt
 from fastapi import Query
 
-@app.get("/healthz")
+@app.get("/health")
 async def healthz(deep: int = Query(default=0, ge=0, le=1)):
     """
     Liveness / Readiness:
