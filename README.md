@@ -285,5 +285,3 @@ GLOBAL_CORS=*
 
 ---
 
-
-Si quieres, te armo un PR/patch con el `main.py` ya podado para dejar **exactamente esos dos endpoints** y subir una nueva imagen `1.0.2`.
