@@ -135,6 +135,54 @@ GET /orq/orders/68dc67973081efedbf717c7d/details?id_usuario=1
 }
 ```
 
+## ¿Qué hace exactamente, paso a paso?
+
+1. **Lee el pedido en MS3**
+
+   * Llama a `MS3 /pedidos/{order_id}`.
+   * Si no existe → **404**.
+   * Extrae: `estado`, `fecha_pedido`, `total` y las líneas (`productos` con `id_producto`, `cantidad`, `precio_unitario` guardado en el pedido).
+
+2. **Verifica que el pedido sea del usuario**
+
+   * Compara el `id_usuario` del pedido (MS3) con el `id_usuario` enviado en el querystring.
+   * Si no coincide → **403** (“No autorizado”).
+
+   > Esto evita que un usuario vea pedidos ajenos.
+
+3. **Enriquece cada línea del pedido con datos actuales de MS2**
+
+   * Por cada `id_producto` del pedido, consulta `MS2 /productos/{id}` en paralelo.
+   * Añade a cada línea:
+
+     * `nombre` del producto (actual)
+     * `current_price_ms2` (precio vigente en el catálogo)
+     * `categoria_id` y `categoria_nombre` (usando `MS2 /categorias`, best-effort)
+   * Si el precio de catálogo **cambió** respecto al que se guardó en el pedido, marca `price_changed_since_order: true` y agrega un issue `PRICE_CHANGED_SINCE_ORDER`.
+
+4. **Adjunta un resumen del usuario desde MS1**
+
+   * `MS1 /usuarios/{id_usuario}` → añade `nombre`, `correo`, `telefono`.
+   * `MS1 /direcciones/{id_usuario}` → cuenta cuántas direcciones tiene (`direcciones_count`).
+
+   > No expone datos sensibles; solo un resumen útil para interfaz/boleta.
+
+5. **Calcula totales estimados** (con tu `TAX_RATE`)
+
+   * Recalcula `recomputed_subtotal_ms3` (usando las líneas que venían del pedido).
+   * Calcula `taxes_estimated` y `total_estimated`.
+   * Si difiere del `total` que guardó MS3, agrega un issue `TOTAL_MISMATCH` (sirve para auditoría/UI).
+
+## ¿Qué devuelve?
+
+Un JSON con:
+
+* `orderId`, `estado`, `fecha_pedido`
+* `user` (resumen de MS1)
+* `lines` (cada línea con datos de MS3 **y** enriquecimiento de MS2)
+* `issues` (alertas como `PRODUCT_NOT_FOUND`, `PRICE_CHANGED_SINCE_ORDER`, `TOTAL_MISMATCH`)
+* `totals` (total original de MS3 vs estimado con impuestos actuales)
+
 ---
 
 ### 3) Health check
