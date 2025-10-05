@@ -1,50 +1,51 @@
-Orquestador Delivery (FastAPI)
+Aquí tienes un **README** actualizado para tu orquestador, basado en el código que pegaste y la decisión de quedarte con **dos endpoints útiles y no redundantes**.
 
-Orquesta microservicios de Usuarios (MS1), Productos (MS2) y Pedidos (MS3) para:
+---
 
-Cotización de carrito (valida usuario/dirección y recalcula precios contra MS2).
+# Orquestador Delivery (FastAPI)
 
-Detalle enriquecido de pedido (trae pedido de MS3 y lo enriquece con info actual de MS2 y resumen de MS1).
+Orquesta microservicios de **Usuarios (MS1)**, **Productos (MS2)** y **Pedidos (MS3)** para:
+
+* **Cotización de carrito** (valida usuario/dirección y recalcula precios contra MS2).
+* **Detalle enriquecido de pedido** (trae pedido de MS3 y lo enriquece con info actual de MS2 y resumen de MS1).
 
 Incluye:
 
-CORS configurable vía variable de entorno.
+* **CORS configurable** vía variable de entorno.
+* **Health check** simple y profundo.
 
-Health check simple y profundo.
+---
 
-Arquitectura y dependencias
+## Arquitectura y dependencias
 
-Python: 3.11+
-
-Framework: FastAPI + Uvicorn
-
-HTTP client: httpx
+* **Python**: 3.11+
+* **Framework**: FastAPI + Uvicorn
+* **HTTP client**: httpx
 
 Microservicios consumidos:
 
-MS1 (Usuarios): GET /usuarios/{id}, GET /direcciones/{id_usuario}
+* **MS1 (Usuarios)**: `GET /usuarios/{id}`, `GET /direcciones/{id_usuario}`
+* **MS2 (Productos)**: `GET /productos/{id}`, `GET /categorias`, `GET /productos`
+* **MS3 (Pedidos)**: `GET /pedidos/{order_id}`, `GET /pedidos`
 
-MS2 (Productos): GET /productos/{id}, GET /categorias, GET /productos
+---
 
-MS3 (Pedidos): GET /pedidos/{order_id}, GET /pedidos
+## Endpoints
 
-Endpoints
-1) Cotización de carrito
+### 1) Cotización de carrito
 
-POST /orq/cart/price-quote
+`POST /orq/cart/price-quote`
 
-Orquesta MS1 + MS2:
+Orquesta **MS1 + MS2**:
 
-Valida que el usuario exista (MS1).
+* Valida que el usuario exista (MS1).
+* (Opcional) Valida que la dirección pertenezca al usuario (MS1).
+* Consulta cada producto al MS2 para obtener **precio vigente** (no confía en el cliente).
+* Calcula `subtotal`, `taxes` y `total` (usa `TAX_RATE`).
 
-(Opcional) Valida que la dirección pertenezca al usuario (MS1).
+**Body (ejemplo)**
 
-Consulta cada producto al MS2 para obtener precio vigente (no confía en el cliente).
-
-Calcula subtotal, taxes y total (usa TAX_RATE).
-
-Body (ejemplo)
-
+```json
 {
   "id_usuario": 1,
   "id_direccion": 1,
@@ -52,10 +53,11 @@ Body (ejemplo)
     {"id_producto": 1, "cantidad": 2}
   ]
 }
+```
 
+**Respuesta (ejemplo)**
 
-Respuesta (ejemplo)
-
+```json
 {
   "generatedAt": "2025-09-30T23:03:07Z",
   "items": [
@@ -77,26 +79,29 @@ Respuesta (ejemplo)
     "total": 1117.65
   }
 }
+```
 
-2) Detalle enriquecido de pedido
+---
 
-GET /orq/orders/{order_id}/details?id_usuario=...
+### 2) Detalle enriquecido de pedido
 
-Orquesta MS3 + MS2 + MS1:
+`GET /orq/orders/{order_id}/details?id_usuario=...`
 
-Trae el pedido (MS3) y verifica que pertenezca a id_usuario.
+Orquesta **MS3 + MS2 + MS1**:
 
-En cada línea, trae el producto actual (MS2) y marca si cambió el precio desde que se creó el pedido.
+* Trae el pedido (MS3) y verifica que **pertenezca** a `id_usuario`.
+* En cada línea, trae el producto actual (MS2) y marca si **cambió el precio** desde que se creó el pedido.
+* Mapea categoría (MS2) y agrega un **resumen del usuario** (MS1) incluyendo cantidad de direcciones.
 
-Mapea categoría (MS2) y agrega un resumen del usuario (MS1) incluyendo cantidad de direcciones.
+**Ejemplo**
 
-Ejemplo
-
+```
 GET /orq/orders/68dc67973081efedbf717c7d/details?id_usuario=1
+```
 
+**Respuesta (recortada)**
 
-Respuesta (recortada)
-
+```json
 {
   "orderId": "68dc67973081efedbf717c7d",
   "estado": "pendiente",
@@ -131,14 +136,18 @@ Respuesta (recortada)
     "total_estimated": 118
   }
 }
+```
 
-3) Health check
+---
 
-GET /health
-GET /health?deep=1 → consulta MS1/MS2/MS3 (best-effort)
+### 3) Health check
 
-Ejemplo
+`GET /health`
+`GET /health?deep=1` → consulta MS1/MS2/MS3 (best-effort)
 
+**Ejemplo**
+
+```json
 {
   "service": "orquestador",
   "time": "2025-09-30T23:59:59Z",
@@ -150,75 +159,80 @@ Ejemplo
     "ms3_pedidos": {"url": "http://ms3-pedidos:3003/pedidos", "status": 200}
   }
 }
+```
 
-4) (Opcional) Debug direcciones
+---
 
-GET /orq/_debug/addresses/{id_usuario}
+### 4) (Opcional) Debug direcciones
+
+`GET /orq/_debug/addresses/{id_usuario}`
 Devuelve crudo lo que responde MS1 y cómo se normaliza.
 
-Qué debes eliminar para quedarte solo con los 2 endpoints
+---
 
-En tu main.py, borra (si aún existen):
+## **Qué debes eliminar** para quedarte solo con los 2 endpoints
 
-@app.post("/orq/orders") (crear pedido)
+En tu `main.py`, **borra** (si aún existen):
 
-@app.put("/orq/orders/{order_id}/cancel") (cancelar pedido)
+* `@app.post("/orq/orders")` (crear pedido)
+* `@app.put("/orq/orders/{order_id}/cancel")` (cancelar pedido)
+* Helpers que **solo** usaban esos endpoints:
 
-Helpers que solo usaban esos endpoints:
+  * `extract_order_id`, `extract_order_id_from_location`
+  * `write_history`
+  * Cache de idempotencia (`_IDEMP_CACHE`, `idem_get`, `idem_set`)
+* Imports asociados a lo anterior si ya no se usan:
 
-extract_order_id, extract_order_id_from_location
+  * `from fastapi import Header` (si no queda ningún uso)
+  * `from app.schemas import CreateOrderReq` (si tienes la clase `CreateOrderReq` definida local y no usas un archivo externo)
 
-write_history
+**Mantén**:
 
-Cache de idempotencia (_IDEMP_CACHE, idem_get, idem_set)
+* `ensure_user_and_address`, `pick`, `to_float`, `normalize_list`, `extract_category_id`, `extract_category_name`
+* Config/CORS/health
+* `POST /orq/cart/price-quote`
+* `GET /orq/orders/{order_id}/details`
 
-Imports asociados a lo anterior si ya no se usan:
+> Si quieres un orquestador **solo-lectura**, puedes incluso borrar la clase `CreateOrderReq`.
+> Si más adelante reactivas creación/cancelación, la vuelves a usar.
 
-from fastapi import Header (si no queda ningún uso)
+---
 
-from app.schemas import CreateOrderReq (si tienes la clase CreateOrderReq definida local y no usas un archivo externo)
+## Variables de entorno
 
-Mantén:
+| Variable               | Descripción                                      | Default                 |
+| ---------------------- | ------------------------------------------------ | ----------------------- |
+| `MS1_URL`              | Base URL de usuarios                             | `http://localhost:8001` |
+| `MS2_URL`              | Base URL de productos                            | `http://localhost:8002` |
+| `MS3_URL`              | Base URL de pedidos                              | `http://localhost:8003` |
+| `REQUEST_TIMEOUT`      | Timeout (s) para httpx                           | `5.0`                   |
+| `TAX_RATE`             | Impuesto aplicado en cotización                  | `0.18`                  |
+| `CORS_ALLOWED_ORIGINS` | `*`, lista separada por comas o `regex:^patrón$` | `*`                     |
 
-ensure_user_and_address, pick, to_float, normalize_list, extract_category_id, extract_category_name
+**Ejemplos de `CORS_ALLOWED_ORIGINS`**
 
-Config/CORS/health
+* `*`
+* `http://localhost:3000,http://localhost:5173`
+* `regex:^https://.*\.tu-dominio\.com$`
 
-POST /orq/cart/price-quote
+---
 
-GET /orq/orders/{order_id}/details
+## Correr local
 
-Si quieres un orquestador solo-lectura, puedes incluso borrar la clase CreateOrderReq.
-Si más adelante reactivas creación/cancelación, la vuelves a usar.
-
-Variables de entorno
-Variable	Descripción	Default
-MS1_URL	Base URL de usuarios	http://localhost:8001
-MS2_URL	Base URL de productos	http://localhost:8002
-MS3_URL	Base URL de pedidos	http://localhost:8003
-REQUEST_TIMEOUT	Timeout (s) para httpx	5.0
-TAX_RATE	Impuesto aplicado en cotización	0.18
-CORS_ALLOWED_ORIGINS	*, lista separada por comas o regex:^patrón$	*
-
-Ejemplos de CORS_ALLOWED_ORIGINS
-
-*
-
-http://localhost:3000,http://localhost:5173
-
-regex:^https://.*\.tu-dominio\.com$
-
-Correr local
+```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8004
+```
 
+Swagger: `http://localhost:8004/docs`
+Redoc: `http://localhost:8004/redoc`
 
-Swagger: http://localhost:8004/docs
-Redoc: http://localhost:8004/redoc
+---
 
-Docker
+## Docker
 
-Dockerfile (ya lo tienes):
+**Dockerfile** (ya lo tienes):
 
+```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
@@ -226,10 +240,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 EXPOSE 8004
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]
+```
 
+**Build & run** (si MS1/2/3 corren en tu host):
 
-Build & run (si MS1/2/3 corren en tu host):
-
+```bash
 docker build -t jdrosales6/ms4-orquestador:1.0.2 -t jdrosales6/ms4-orquestador:latest .
 docker run --rm -p 8004:8004 \
   --add-host=host.docker.internal:host-gateway \
@@ -238,10 +253,11 @@ docker run --rm -p 8004:8004 \
   -e MS3_URL=http://host.docker.internal:8003 \
   -e CORS_ALLOWED_ORIGINS="*" \
   jdrosales6/ms4-orquestador:1.0.2
+```
 
+**docker-compose** junto a tus MS (misma red):
 
-docker-compose junto a tus MS (misma red):
-
+```yaml
 services:
   ms4-orquestador:
     image: jdrosales6/ms4-orquestador:1.0.2
@@ -262,39 +278,15 @@ services:
       - ms1-usuarios
       - ms2-productos
       - ms3-pedidos
+```
 
+`.env`:
 
-.env:
-
+```
 GLOBAL_CORS=*
+```
 
-Tests rápidos
-
-Cotización
-
-curl -s -X POST http://localhost:8004/orq/cart/price-quote \
-  -H 'Content-Type: application/json' \
-  -d '{"id_usuario":1,"id_direccion":1,"items":[{"id_producto":1,"cantidad":1}]}' | jq
+---
 
 
-Detalle de pedido
-
-curl -s "http://localhost:8004/orq/orders/<ORDER_ID>/details?id_usuario=1" | jq
-
-
-Health
-
-curl -s http://localhost:8004/health | jq
-curl -s "http://localhost:8004/health?deep=1" | jq
-
-Troubleshooting
-
-400 “Dirección inválida…”
-Verifica direcciones con GET /orq/_debug/addresses/{id_usuario} y usa un id_direccion que pertenezca al usuario.
-
-ECONNREFUSED a MS1/MS2/MS3 en Docker
-En compose usa http://<service_name>:<puerto interno> (no localhost).
-En docker run contra servicios en el host, usa http://host.docker.internal:<puerto> + --add-host=host.docker.internal:host-gateway (Linux).
-
-CORS bloqueado
-Ajusta CORS_ALLOWED_ORIGINS / GLOBAL_CORS.
+Si quieres, te armo un PR/patch con el `main.py` ya podado para dejar **exactamente esos dos endpoints** y subir una nueva imagen `1.0.2`.
