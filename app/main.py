@@ -232,6 +232,7 @@ async def healthz(deep: int = Query(default=0, ge=0, le=1)):
     all_ok = all(c.get("status") == 200 for c in checks)
     status["status"] = "ready" if all_ok else "degraded"
     return status
+
 # ---------- Endpoint ÚNICO: /orq/cart/price-quote ----------
 @app.post("/orq/cart/price-quote")
 async def price_quote(payload: PriceQuoteReq):
@@ -335,6 +336,157 @@ async def price_quote(payload: PriceQuoteReq):
     }
 from fastapi import Header
 
+
+@app.get("/orq/orders/{order_id}/details")
+async def order_details(order_id: str, id_usuario: int):
+    """
+    Devuelve el pedido con enriquecimiento:
+    - Valida que el pedido exista (MS3) y pertenezca a id_usuario.
+    - Enriquecer líneas con datos actuales de MS2 (nombre, categoría, precio vigente).
+    - Adjunta resumen del usuario y conteo de direcciones (MS1).
+    """
+    # 1) Traer pedido de MS3
+    r = await client.get(f"{MS3}/pedidos/{order_id}")
+    if r.status_code != 200:
+        raise HTTPException(404, "Pedido no existe")
+    pedido = r.json()
+
+    # 2) Verificar dueño
+    pedido_user = pick(pedido, "id_usuario", "usuario_id", "user_id")
+    if pedido_user is None or int(pedido_user) != int(id_usuario):
+        raise HTTPException(403, "No autorizado")
+
+    fecha_pedido = pick(pedido, "fecha_pedido", "fecha", "createdAt")
+    total_ms3 = to_float(pick(pedido, "total", "monto_total", "total_pedido", default=0.0))
+    items_ms3 = pick(pedido, "productos", "items", default=[])
+    if not isinstance(items_ms3, list):
+        items_ms3 = []
+
+    # 3) Enriquecer cada línea con MS2 (paralelo)
+    async def fetch_prod(prod_id: int):
+        return await client.get(f"{MS2}/productos/{prod_id}")
+
+    tasks = []
+    for it in items_ms3:
+        prod_id = pick(it, "id_producto", "producto_id", "product_id")
+        try:
+            prod_id = int(prod_id)
+        except Exception:
+            prod_id = None
+        tasks.append(fetch_prod(prod_id) if prod_id is not None else None)
+
+    responses = []
+    for t in tasks:
+        if t is None:
+            responses.append(None)
+        else:
+            responses.append(await t)
+
+    lines = []
+    issues = []
+    recomputed_subtotal = 0.0
+
+    # Mapa de categorías (best-effort)
+    cat_map = {}
+    try:
+        cats = await client.get(f"{MS2}/categorias")
+        if cats.status_code == 200 and isinstance(cats.json(), list):
+            for c in cats.json():
+                cat_id = pick(c, "id_categoria", "categoria_id", "id", "category_id")
+                try:
+                    cat_id = int(cat_id)
+                except Exception:
+                    continue
+                cat_map[cat_id] = extract_category_name(c)
+    except Exception:
+        pass
+
+    for it, resp in zip(items_ms3, responses):
+        pid = pick(it, "id_producto", "producto_id", "product_id")
+        try:
+            pid = int(pid)
+        except Exception:
+            pid = None
+
+        cantidad = to_float(pick(it, "cantidad", "qty", "quantity", default=0), 0.0)
+        precio_unit_ms3 = to_float(pick(it, "precio_unitario", "precio", "unit_price", default=0.0), 0.0)
+        line_total_ms3 = round(precio_unit_ms3 * cantidad, 2)
+        recomputed_subtotal += line_total_ms3
+
+        # datos actuales desde MS2
+        nombre = None
+        current_price_ms2 = None
+        categoria_id = None
+        categoria_nombre = None
+
+        if resp is None or (hasattr(resp, "status_code") and resp.status_code != 200):
+            issues.append({"id_producto": pid, "reason": "PRODUCT_NOT_FOUND"})
+        else:
+            prod = resp.json()
+            nombre = pick(prod, "nombre", "name")
+            current_price_ms2 = to_float(pick(prod, "precio", "price", "valor", default=None))
+            categoria_id = extract_category_id(prod)
+            if categoria_id in cat_map:
+                categoria_nombre = cat_map[categoria_id]
+
+        price_drift = (
+            current_price_ms2 is not None and
+            abs(to_float(current_price_ms2) - to_float(precio_unit_ms3)) > 1e-6
+        )
+        if price_drift:
+            issues.append({"id_producto": pid, "reason": "PRICE_CHANGED_SINCE_ORDER"})
+
+        lines.append({
+            "id_producto": pid,
+            "nombre": nombre,
+            "cantidad": cantidad,
+            "precio_unitario_ms3": precio_unit_ms3,
+            "line_total_ms3": line_total_ms3,
+            "current_price_ms2": current_price_ms2,
+            "price_changed_since_order": price_drift,
+            "categoria_id": categoria_id,
+            "categoria_nombre": categoria_nombre
+        })
+
+    taxes_est = round(recomputed_subtotal * TAX_RATE, 2)
+    total_est = round(recomputed_subtotal + taxes_est, 2)
+
+    # 4) Resumen de usuario (MS1)
+    user_summary = {}
+    u = await client.get(f"{MS1}/usuarios/{id_usuario}")
+    if u.status_code == 200:
+        uj = u.json()
+        user_summary = {
+            "id_usuario": id_usuario,
+            "nombre": pick(uj, "nombre", "name"),
+            "correo": pick(uj, "correo", "email"),
+            "telefono": pick(uj, "telefono", "phone"),
+        }
+    d = await client.get(f"{MS1}/direcciones/{id_usuario}")
+    if d.status_code == 200:
+        dir_list = normalize_list(d.json())
+        user_summary["direcciones_count"] = len(dir_list)
+
+    # 5) Posibles inconsistencias
+    if abs(total_ms3 - total_est) > 0.01:
+        issues.append({"reason": "TOTAL_MISMATCH", "total_ms3": total_ms3, "total_est": total_est})
+
+    return {
+        "orderId": order_id,
+        "estado": pick(pedido, "estado", "status"),
+        "fecha_pedido": fecha_pedido,
+        "user": user_summary,
+        "lines": lines,
+        "issues": issues,
+        "totals": {
+            "total_ms3": total_ms3,
+            "recomputed_subtotal_ms3": round(recomputed_subtotal, 2),
+            "taxes_estimated": taxes_est,
+            "total_estimated": total_est
+        }
+    }
+
+
 from typing import Tuple
 
 def _maybe_oid(v):
@@ -432,126 +584,3 @@ async def write_history(order_id: str, estado: str, comentarios: str) -> tuple[b
 
     # Si hubo rutas que respondieron distinto a 404 y ninguna funcionó => devolver False (fallo real)
     return False, f"fallo historial MS3 (último status {last_status}, body={last_body})"
-
-@app.post("/orq/orders", status_code=201)
-async def create_order(payload: CreateOrderReq, Idempotency_Key: Optional[str] = Header(default=None)):
-    # Idempotencia
-    cached = idem_get(Idempotency_Key)
-    if cached:
-        return cached
-
-    # Validaciones base (usuario + dirección perteneciente)
-    await ensure_user_and_address(payload.id_usuario, payload.id_direccion)
-
-    # 1) Revalidar precios en MS2 (autoritativo)
-    async def fetch(prod_id: int):
-        return await client.get(f"{MS2}/productos/{prod_id}")
-
-    tasks = [fetch(i.id_producto) for i in payload.items]
-    responses = await asyncio.gather(*tasks)
-
-    lineas, subtotal = [], 0.0
-    for req_item, resp in zip(payload.items, responses):
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Producto {req_item.id_producto} inválido")
-        prod = resp.json()
-        precio = to_float(pick(prod, "precio", "price", "valor", default=0.0))
-        lineas.append({
-            "id_producto": req_item.id_producto,
-            "cantidad": req_item.cantidad,
-            "precio_unitario": precio
-        })
-        subtotal += precio * req_item.cantidad
-
-    taxes = round(subtotal * TAX_RATE, 2)
-    total = round(subtotal + taxes, 2)
-
-    pedido_payload = {
-        "id_usuario": payload.id_usuario,
-        "fecha_pedido": now_iso(),
-        "estado": "pendiente",
-        "total": total,
-        "productos": lineas
-    }
-
-    # 2) Crear pedido en MS3 (acepta 200 o 201)
-    create = await client.post(f"{MS3}/pedidos", json=pedido_payload)
-    if create.status_code not in (200, 201):
-        raise HTTPException(502, f"No se pudo crear el pedido (MS3 status {create.status_code})")
-
-    # Intentar leer el body; si no, queda en None
-    try:
-        pedido_obj = create.json()
-    except Exception:
-        pedido_obj = None
-
-    # 2.1) Extraer order_id del body o del header Location
-    order_id = extract_order_id(pedido_obj)
-    if not order_id:
-        order_id = extract_order_id_from_location(create.headers)
-
-    if not order_id:
-        raise HTTPException(502, "MS3 no devolvió el id del pedido")
-
-    # 3) === HISTORIAL (AQUÍ VA EL BLOQUE QUE TE CONFUNDÍA) ===
-    ok_hist, hist_msg = await write_history(order_id, "pendiente", "Pedido creado vía orquestador")
-    if not ok_hist:
-        # NO hacemos rollback: dejamos creado el pedido y avisamos
-        return {
-            "orderId": order_id,
-            "estado": "pendiente",
-            "totals": {"subtotal": round(subtotal, 2), "taxes": taxes, "total": total},
-            "lineas": lineas,
-            "direccion_entrega_id": payload.id_direccion,
-            "createdAt": now_iso(),
-            "warnings": [hist_msg]
-        }
-
-    # 4) Respuesta final del orquestador
-    response = {
-        "orderId": order_id,
-        "estado": "pendiente",
-        "totals": {"subtotal": round(subtotal, 2), "taxes": taxes, "total": total},
-        "lineas": lineas,
-        "direccion_entrega_id": payload.id_direccion,
-        "createdAt": now_iso()
-    }
-    idem_set(Idempotency_Key, response)
-    return response
-
-@app.put("/orq/orders/{order_id}/cancel")
-async def cancel_order(order_id: str, id_usuario: int):
-    # Obtener pedido
-    r = await client.get(f"{MS3}/pedidos/{order_id}")
-    if r.status_code != 200:
-        raise HTTPException(404, "Pedido no existe")
-    pedido = r.json()
-
-    # Verificar dueño (esquemas flexibles)
-    pedido_user = pick(pedido, "id_usuario", "usuario_id", "user_id")
-    if pedido_user is None or int(pedido_user) != int(id_usuario):
-        raise HTTPException(403, "No autorizado")
-
-    estado_anterior = pick(pedido, "estado", "status", default="pendiente")
-
-    # Cambiar estado
-    upd = await client.put(f"{MS3}/pedidos/{order_id}", json={"estado": "cancelado"})
-    if upd.status_code != 200:
-        raise HTTPException(502, "No se pudo cancelar el pedido")
-
-    # Historial; revertir si falla
-    ok_hist, hist_msg = await write_history(order_id, "cancelado", "Cancelación solicitada por el usuario")
-    if ok_hist:
-        return {"orderId": order_id, "estado": "cancelado"}
-    # Si el historial “existía” pero falló, devolvemos 200 igualmente y avisamos con warning
-    return {"orderId": order_id, "estado": "cancelado", "warnings": [hist_msg]}
-
-
-@app.get("/orq/_debug/addresses/{id_usuario}")
-async def debug_addresses(id_usuario: int):
-    r = await client.get(f"{MS1}/direcciones/{id_usuario}")
-    try:
-        raw = r.json()
-    except Exception:
-        raw = r.text
-    return {"status": r.status_code, "raw": raw, "normalized": normalize_list(raw)}
